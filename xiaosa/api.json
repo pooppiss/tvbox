@@ -730,7 +730,7 @@
         },
         {
             "key": "厂长影视",
-            "name": "厂长|影视",
+            "name": "厂长｜影视",
             "type": 3,
             "playerType": "2",
             "api": "csp_Czsapp",
@@ -762,8 +762,7 @@
             "key": "奇优影视",
             "name": "奇优｜影视",
             "type": 3,
-            "api": "csp_Qiyou",
-            "ext": "http://www.dyxz2.com/"
+            "api": "csp_Qiyou"
         },
         {
             "key": "苹果影视",
