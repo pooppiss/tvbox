@@ -73,19 +73,6 @@
             }
         },
         {
-            "key": "追忆",
-            "name": "追忆｜APP",
-            "type": 3,
-            "quickSearch": 1,
-            "api": "csp_AppSy",
-            "ext": {
-                "url": "http://110.42.37.69:1866",
-                "key1": "aassddwwxxllsx1x",
-                "key2": "73f330328cc0fe67",
-                "key3": "73f330328cc0fe67"
-            }
-        },
-        {
             "key": "星河",
             "name": "星河｜APP",
             "type": 3,
@@ -96,19 +83,6 @@
                 "key1": "aassddwwxxllsx1x",
                 "key2": "aassddwwxxllsx1x",
                 "key3": "aassddwwxxllsx1x"
-            }
-        },
-        {
-            "key": "爱影",
-            "name": "爱影｜APP",
-            "type": 3,
-            "quickSearch": 1,
-            "api": "csp_AppSy",
-            "ext": {
-                "url": "http://110.42.7.59:11822",
-                "key1": "aassddwwxxllsx1x",
-                "key2": "1e765e9b09b4dbba",
-                "key3": "1e765e9b09b4dbba"
             }
         },
         {
@@ -230,6 +204,21 @@
                 "site": "https://jingyu4k-1312635929.cos.ap-nanjing.myqcloud.com/1.json",
                 "dataKey": "AAdgrdghjfgswerA",
                 "dataIv": "AAdgrdghjfgswerA",
+                "deviceId": "",
+                "version": ""
+            }
+        },
+        {
+            "key": "云端",
+            "name": "云端｜APP",
+            "type": 3,
+            "quickSearch": 1,
+            "api": "csp_AppGet",
+            "ext": {
+                "url": "https://c8k2n5l0i9s8b2m1jj8k2x2l9ff68.ydysapi.cfd:27899",
+                "site": "",
+                "dataKey": "k9o3p2c8b7m3z0o8",
+                "dataIv": "k9o3p2c8b7m3z0o8",
                 "deviceId": "",
                 "version": ""
             }
@@ -1358,7 +1347,8 @@
             "key": "荐片",
             "name": "荐片｜磁力",
             "api": "csp_Jianpian",
-            "type": 3
+            "type": 3,
+            "ext": "https://ij1men.slsw6.com"
         },
         {
             "key": "修罗影视",
