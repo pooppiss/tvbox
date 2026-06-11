@@ -1,6 +1,4 @@
 # Auto Sync My Copy
-# 将 jsm.json 同步为 qzh.json
-# 当 Update xiaosa (run.yml) 工作流完成后自动触发
 name: Auto Sync My Copy
 on:
   workflow_run:
@@ -16,18 +14,16 @@ jobs:
       - uses: actions/checkout@v4
       - name: Copy and commit
         run: |
-          # 如果 qzh.json 不存在先创建空文件，确保 git add 不会失败
-          cp jsm.json qzh.json
+          cp jsm.json qzh.json 2>/dev/null || true
           git config user.name "auto-sync"
-          git config user.email "sync@bot.com"
-          git add qzh.json
+          git config user.email "auto-sync@github.com"
+          git add qzh.json 2>/dev/null || true
           git diff --cached --quiet || git commit -m "auto sync qzh.json $(date +%Y-%m-%d)"
           git push
-
-      - name: Ensure qzh.json exists (first run)
+      - name: Init qzh.json if missing
         if: failure()
         run: |
           touch qzh.json
           git add qzh.json
-          git commit -m "init qzh.json $(date +%Y-%m-%d)" || true
+          git commit -m "init qzh.json" || true
           git push
