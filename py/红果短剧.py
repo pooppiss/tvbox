@@ -472,6 +472,16 @@ def _hg_cache_put(vid: str, quality: str, data: bytes) -> None:
                 os.remove(path + ".tmp")
         except Exception:
             pass
+def _hg_cache_drop(vid: str, quality: str) -> None:
+    """删除单个缓存文件（用于剔除错发成纯音频的坏缓存）。"""
+    if not _hg_cache_enabled():
+        return
+    try:
+        path = _hg_cache_path(vid, quality)
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        pass
 def _hg_cache_keep_only(vid: str) -> None:
     """播完删除：只保留当前这集（含各清晰度）的缓存，删掉其它剧集的缓存和残留 tmp。"""
     if not vid:
@@ -1046,6 +1056,36 @@ def _looks_like_mp4(data) -> bool:
     if b"ftyp" in bytes(data[:64]):
         return True
     return b"moov" in bytes(data[:4_000_000])
+# 真实视频编码 fourcc（stsd/frma 内）。听书音频资源会带一个空壳视频轨
+# （hdlr=vide、frma=bvc2 私有编码、tkhd 宽高为 0），按 hdlr 判断会误判，
+# 只认 ExoPlayer 可播的真实视频编码；匹配范围限定 moov，避免 mdat 密文撞码。
+_VIDEO_CODEC_RE = re.compile(rb"(avc1|avc3|hvc1|hev1|dvh1|dvhe|av01)")
+def _mp4_has_video(data) -> bool:
+    """判断 MP4（整文件或 moov 片段）是否含可播放的视频轨。
+    红果 CDN 偶发把个别集数的某清晰度错发成听书纯音频资源，
+    不校验直接回给播放器就是"只有声音没图像"。"""
+    if not data:
+        return False
+    buf = bytes(data)
+    n = len(buf)
+    spans = []
+    if n >= 8 and buf[4:8] == b"moov":
+        spans.append((0, n))
+    else:
+        pos = 0
+        while pos + 8 <= n:
+            try:
+                size = struct.unpack(">I", buf[pos:pos + 4])[0]
+            except Exception:
+                break
+            if size < 8:
+                break
+            if buf[pos + 4:pos + 8] == b"moov":
+                spans.append((pos + 8, min(pos + size, n)))
+            pos += size
+    if not spans:
+        spans.append((0, n))
+    return any(_VIDEO_CODEC_RE.search(buf[s:e]) for s, e in spans)
 def decrypt_mp4_cenc(data: bytes, content_key: bytes) -> bytes:
     if len(content_key) != 16:
         raise HongguoPluginError("CENC 密钥长度错误")
@@ -1339,33 +1379,60 @@ class _StreamSession:
             block = self.read_range(cursor, stop)
             yield block
             cursor += len(block)
-def _stream_session(video_id: str, config: Mapping[str, Any]) -> "_StreamSession":
+def _stream_session(video_id: str, config: Mapping[str, Any], wanted_quality: str = "") -> "_StreamSession":
+    # 缓存 key 必须包含清晰度, 否则切换清晰度会命中旧 session
+    cache_key = "%s|%s" % (video_id, wanted_quality or "default")
     with _STREAM_LOCK:
         sessions = _STREAM_STATE["sessions"]
         for key in [key for key, item in sessions.items() if item.expired()]:
             sessions.pop(key, None)
-        session = sessions.get(video_id)
+        session = sessions.get(cache_key)
     if session is not None:
         return session
     model = _video_model(video_id, config)
-    _, item = _select_quality(_video_list_from_model(model), "1080")
-    url = _media_url(item)
-    spade = _spade_value(item)
-    if not url or not spade:
-        raise HongguoPluginError("播放模型缺少地址或密钥材料")
+    rows = _video_list_from_model(model)
+    user_q = str(wanted_quality or "").strip()
+    if user_q:
+        # 用户选了清晰度: 优先该清晰度, 无视频轨(纯音频资源)则换档降级
+        order = [user_q] + [q for q in _QUALITY_ORDER if q != user_q]
+    else:
+        order = ["1080"] + [q for q in _QUALITY_ORDER if q != "1080"]
     key_seed = _key_seed_from_model(model)
-    if key_seed:
+    url = spade = ""
+    total = moov_start = 0
+    moov = b""
+    last_err: Exception | None = None
+    for q in order:
         try:
-            url = _decrypt_spade_url(url, key_seed)
-        except HongguoPluginError:
-            pass
-    total, moov_start, moov = _fetch_moov(url)
+            _q, item = _select_quality(rows, q)
+            q_url = _media_url(item)
+            q_spade = _spade_value(item)
+            if not q_url or not q_spade:
+                last_err = HongguoPluginError("q=%s 缺少地址或密钥材料" % q)
+                continue
+            if key_seed:
+                try:
+                    q_url = _decrypt_spade_url(q_url, key_seed)
+                except HongguoPluginError:
+                    pass
+            q_total, q_start, q_moov = _fetch_moov(q_url)
+            if not _mp4_has_video(q_moov):
+                last_err = HongguoPluginError("q=%s 无视频轨(纯音频资源)" % q)
+                continue
+            url, spade = q_url, q_spade
+            total, moov_start, moov = q_total, q_start, q_moov
+            break
+        except Exception as e:
+            last_err = e
+            continue
+    if not url or not moov:
+        raise last_err or HongguoPluginError("无可用清晰度")
     session = _StreamSession(url, derive_content_key(spade), total, moov_start, moov)
     with _STREAM_LOCK:
         sessions = _STREAM_STATE["sessions"]
         while len(sessions) >= _STREAM_MAX_SESSIONS:
             sessions.pop(next(iter(sessions)), None)
-        sessions[video_id] = session
+        sessions[cache_key] = session
     return session
 _RANGE_UNSATISFIABLE = "unsatisfiable"
 def _parse_range(value: str, total: int) -> Any:
@@ -1408,6 +1475,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             "bid": (query.get("bid") or [""])[0],
             "device_id": (query.get("did") or [""])[0],
             "install_id": (query.get("iid") or [""])[0],
+            "q": (query.get("q") or [""])[0],
         }
     def _fail(self, code: int, message: bytes) -> None:
         self.send_response(code)
@@ -1437,7 +1505,7 @@ class _StreamHandler(BaseHTTPRequestHandler):
             "install_id": params["install_id"],
         }
         try:
-            session = _stream_session(params["vid"], cfg)
+            session = _stream_session(params["vid"], cfg, params.get("q", ""))
         except Exception:
             self._fail(502, b"media session failed")
             return
@@ -4231,10 +4299,23 @@ class Spider(_BaseSpider):
                     }]
             result["filters"] = filters
         try:
-            result["list"] = self.categoryContent(self.CATS[0][0], 1, False, {}).get("list", [])
+            result["list"] = self._home_recommend()
         except Exception:
             result["list"] = []
         return result
+    def _home_recommend(self):
+        """首页推荐: 官网首页卡位，与真人内容一致（参考 xiaosa 版实现）；
+        官网取不到时回落真人剧分类首屏。"""
+        try:
+            cards = self._parse_list(self._get(self.host + "/"))
+            if cards:
+                return cards[:24]
+        except Exception as e:
+            print("home recommend error: %s" % e)
+        try:
+            return self.categoryContent("real-drama", 1, False, {}).get("list", [])
+        except Exception:
+            return []
     def _common_filter_tail(self):
         """全部推荐/全部受众/全部时间 三行（App 同名行，landing 同名字段尽力传参）。"""
         return [
@@ -4278,7 +4359,7 @@ class Spider(_BaseSpider):
         return rows
     def homeVideoContent(self):
         try:
-            return {"list": self.categoryContent(self.CATS[0][0], 1, False, {}).get("list", [])}
+            return {"list": self._home_recommend()}
         except Exception:
             return {"list": []}
     def _genre_rows(self, tab_type: int) -> list[tuple[str, str]]:
@@ -5231,10 +5312,16 @@ class Spider(_BaseSpider):
                 if q and q not in seen:
                     seen.add(q)
                     quals.append(q)
-            for q in quals:
+            # 用户指定清晰度时只认该清晰度缓存，不能回退命中其它清晰度缓存，
+            # 否则第一次播过的画质会一直命中缓存，切换画质不生效
+            primary = [user_q] if user_q else quals
+            for q in primary:
                 cached = _hg_cache_get(vid, q)
                 if cached:
-                    return [200, "video/mp4", cached]
+                    if _mp4_has_video(cached):
+                        return [200, "video/mp4", cached]
+                    # CDN 错发的纯音频缓存, 剔除后走重新下载
+                    _hg_cache_drop(vid, q)
             model = _video_model(vid, cfg)
             rows = _video_list_from_model(model)
             if not rows:
@@ -5244,7 +5331,10 @@ class Spider(_BaseSpider):
                 try:
                     cached = _hg_cache_get(vid, wanted)
                     if cached:
-                        return [200, "video/mp4", cached]
+                        if _mp4_has_video(cached):
+                            return [200, "video/mp4", cached]
+                        # CDN 错发的纯音频缓存, 剔除后走重新下载
+                        _hg_cache_drop(vid, wanted)
                     _q, item = _select_quality(rows, wanted)
                     url = _media_url(item)
                     spade = _spade_value(item)
@@ -5290,6 +5380,9 @@ class Spider(_BaseSpider):
                                 "bad mp4 after decrypt q=%s" % wanted)
                         else:
                             last_err = "bad mp4 q=%s" % wanted
+                        continue
+                    if not _mp4_has_video(candidate):
+                        last_err = "no video track q=%s (纯音频资源)" % wanted
                         continue
                     try:
                         _hg_cache_put(vid, wanted, candidate)
